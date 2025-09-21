@@ -1,135 +1,101 @@
 import streamlit as st
-import re
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
 import nltk
-from nltk.sentiment import SentimentIntensityAnalyzer
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+import pandas as pd
+import matplotlib.pyplot as plt
+from transformers import pipeline
 
-# Download vader if not available
+# Download VADER if not already present
 nltk.download("vader_lexicon", quiet=True)
 
-# Transformers (optional)
-try:
-    from transformers import pipeline
-    transformers_available = True
-except:
-    transformers_available = False
+# Initialize analyzers
+vader = SentimentIntensityAnalyzer()
+transformer = pipeline("sentiment-analysis")
 
+# ---------------------- Helper Functions ----------------------
+def fetch_text_from_url(url):
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, "html.parser")
+        paragraphs = [p.get_text() for p in soup.find_all("p")]
+        return " ".join(paragraphs)
+    except Exception as e:
+        return f"Error fetching URL: {e}"
 
-# ---------------- Utility functions ----------------
-def fetch_text_from_url(url: str) -> str:
-    """Fetch text content from a webpage."""
-    resp = requests.get(url, timeout=15)
-    soup = BeautifulSoup(resp.text, "html.parser")
-    article = soup.find("article")
-    if article:
-        text = " ".join([p.get_text() for p in article.find_all("p")])
+def analyze_vader(text):
+    scores = vader.polarity_scores(text)
+    # Normalize to percentage
+    total = scores["pos"] + scores["neu"] + scores["neg"]
+    percentages = {
+        "Positive": round((scores["pos"] / total) * 100, 2),
+        "Neutral": round((scores["neu"] / total) * 100, 2),
+        "Negative": round((scores["neg"] / total) * 100, 2),
+    }
+    overall = max(percentages, key=percentages.get)
+    return overall, percentages
+
+def analyze_transformer(text):
+    result = transformer(text[:512])[0]  # first 512 chars for speed
+    label = result["label"]
+    score = round(result["score"] * 100, 2)
+    percentages = {"Positive": 0, "Negative": 0, "Neutral": 0}
+    if label.upper() == "POSITIVE":
+        percentages["Positive"] = score
+    elif label.upper() == "NEGATIVE":
+        percentages["Negative"] = score
     else:
-        text = " ".join([p.get_text() for p in soup.find_all("p")])
-    return re.sub(r"\s+", " ", text).strip()
+        percentages["Neutral"] = score
+    return label.capitalize(), percentages
 
+def plot_sentiment(percentages):
+    fig, ax = plt.subplots()
+    ax.bar(percentages.keys(), percentages.values(), color=["green", "blue", "red"])
+    ax.set_title("Sentiment Analysis Result")
+    ax.set_ylabel("Percentage")
+    st.pyplot(fig)
 
-def analyze_vader(text: str):
-    sia = SentimentIntensityAnalyzer()
-    scores = sia.polarity_scores(text)
-    compound = scores["compound"]
-    if compound >= 0.05:
-        label = "POSITIVE"
-    elif compound <= -0.05:
-        label = "NEGATIVE"
-    else:
-        label = "NEUTRAL"
-    return label, scores
+# ---------------------- Streamlit UI ----------------------
+st.title("📊 Sentiment Analysis Tool")
+st.write("Enter text, URL, or upload a file to analyze sentiment.")
 
+# Input options
+input_type = st.radio("Choose input type:", ["Raw Text", "URL", "File Upload"])
+backend = st.radio("Choose Analysis Method:", ["VADER (Fast)", "Transformer (Accurate)"])
 
-def analyze_transformer(text: str):
-    if not transformers_available:
-        return "Transformers not installed", {}
-    classifier = pipeline("sentiment-analysis")
-    result = classifier(text[:512])[0]  # limit text length for demo
-    return result["label"], {"score": result["score"]}
+text_data = ""
 
-
-def analyze_text(text, model):
-    if model == "VADER":
-        return analyze_vader(text)
-    else:
-        return analyze_transformer(text)
-
-
-# ---------------- Streamlit UI ----------------
-st.title("📊 Sentiment Analysis App")
-
-option = st.radio(
-    "Select Input Source:",
-    ["Enter Raw Text", "Provide URL", "Upload File", "Upload CSV"],
-)
-
-model = st.selectbox("Choose Model:", ["VADER", "Transformer (HuggingFace)"])
-
-
-# Raw Text
-if option == "Enter Raw Text":
-    user_input = st.text_area("Enter your text here:")
-    if st.button("Analyze Text"):
-        if user_input.strip():
-            label, scores = analyze_text(user_input, model)
-            st.subheader("Result:")
-            st.write(f"**Sentiment:** {label}")
-            st.json(scores)
-        else:
-            st.warning("Please enter some text.")
-
-
-# URL
-elif option == "Provide URL":
+if input_type == "Raw Text":
+    text_data = st.text_area("Enter your text here:")
+elif input_type == "URL":
     url = st.text_input("Enter webpage URL:")
-    if st.button("Analyze URL"):
-        if url:
-            text = fetch_text_from_url(url)
-            label, scores = analyze_text(text, model)
-            st.subheader("Result:")
-            st.write(f"**Sentiment:** {label}")
-            st.json(scores)
-            st.subheader("Extracted Text Preview:")
-            st.write(text[:500] + ("..." if len(text) > 500 else ""))
+    if url:
+        text_data = fetch_text_from_url(url)
+elif input_type == "File Upload":
+    file = st.file_uploader("Upload a .txt or .csv file", type=["txt", "csv"])
+    if file is not None:
+        if file.name.endswith(".txt"):
+            text_data = file.read().decode("utf-8")
+        elif file.name.endswith(".csv"):
+            df = pd.read_csv(file)
+            st.write("CSV Preview:", df.head())
+            column = st.selectbox("Select column to analyze", df.columns)
+            text_data = " ".join(df[column].astype(str))
+
+if st.button("🔍 Analyze Sentiment"):
+    if text_data.strip() == "":
+        st.warning("Please enter or upload some text.")
+    else:
+        if backend == "VADER (Fast)":
+            overall, percentages = analyze_vader(text_data)
         else:
-            st.warning("Please enter a URL.")
+            overall, percentages = analyze_transformer(text_data)
 
+        st.subheader("✅ Analysis Result")
+        st.write(f"**Overall Sentiment:** {overall}")
+        st.write("**Percentage Breakdown:**")
+        for k, v in percentages.items():
+            st.write(f"- {k}: {v}%")
 
-# File Upload (TXT)
-elif option == "Upload File":
-    uploaded_file = st.file_uploader("Upload a text file", type=["txt"])
-    if uploaded_file and st.button("Analyze File"):
-        text = uploaded_file.read().decode("utf-8")
-        label, scores = analyze_text(text, model)
-        st.subheader("Result:")
-        st.write(f"**Sentiment:** {label}")
-        st.json(scores)
-        st.subheader("File Preview:")
-        st.write(text[:500] + ("..." if len(text) > 500 else ""))
-
-
-# CSV Upload
-elif option == "Upload CSV":
-    uploaded_csv = st.file_uploader("Upload a CSV file", type=["csv"])
-    text_column = st.text_input("Enter the column name containing text:")
-    if uploaded_csv and text_column and st.button("Analyze CSV"):
-        df = pd.read_csv(uploaded_csv)
-        if text_column not in df.columns:
-            st.error(f"Column '{text_column}' not found. Available: {list(df.columns)}")
-        else:
-            results = []
-            for txt in df[text_column].fillna(""):
-                label, scores = analyze_text(str(txt), model)
-                results.append({"text": txt, "label": label, "score": scores})
-            result_df = pd.DataFrame(results)
-            st.subheader("CSV Results:")
-            st.dataframe(result_df.head())
-            st.download_button(
-                "Download Results CSV",
-                result_df.to_csv(index=False).encode("utf-8"),
-                "sentiment_results.csv",
-                "text/csv",
-            )
+        plot_sentiment(percentages)
