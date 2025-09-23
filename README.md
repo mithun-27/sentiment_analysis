@@ -85,6 +85,8 @@ You'll need Python 3.8+ and `pip` installed.
 
 -----
 
+Note on URLs: This tool is designed to work with unsecured or less-secured URLs (e.g., those without complex authentication or strong anti-scraping measures). Highly secured websites may not be accessible.
+
 ## Acknowledgment
 
   - **VADER** (Valence Aware Dictionary and sEntiment Reasoner) from NLTK.
